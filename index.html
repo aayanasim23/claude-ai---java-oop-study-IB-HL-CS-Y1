@@ -893,7 +893,7 @@ window.checkWritten=async function(){
     const providerCfg = (typeof PROVIDERS !== 'undefined' && PROVIDERS[providerKey]) || PROVIDERS['openrouter'];
     const sysPrompt = 'You are a concise Java OOP tutor for IB CS HL. First line must be exactly CORRECT or NEEDS WORK. Then 2-3 sentences on what is right/wrong and a quick fix. For definitions: CORRECT if they capture the core idea. For code: ignore minor typos, focus on logic and structure. Max 80 words.';
     const sysMsgs = [{role:'system',content:sysPrompt},{role:'user',content:`Task: ${q.prompt}\nAnswer:\n${code}`}];
-    const apiUrl = providerCfg.urlFn ? providerCfg.urlFn(apiKey) : providerCfg.url;
+    const apiUrl = providerCfg.urlFn ? providerCfg.urlFn(apiKey) : (providerCfg.url || '');
     const bodyData = providerCfg.body.length === 2 ? providerCfg.body(sysMsgs, apiKey) : providerCfg.body(sysMsgs);
     const res=await fetch(apiUrl,{method:'POST',headers:providerCfg.headers(apiKey),body:bodyData});
     const data=await res.json();
@@ -952,10 +952,10 @@ const PROVIDERS = {
     name:'Gemini (free)',
     hint:'100% free at aistudio.google.com — sign in with Google → Get API Key. Best free option.',
     placeholder:'AIza...',
-    headers: k => ({'Content-Type':'application/json'}),
-    body: (msgs, k) => JSON.stringify({contents:[{parts:[{text:msgs[0].content+'\n\nUser answer:\n'+msgs[1].content}]}]}),
-    urlFn: k => 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key='+k,
-    parse: d => d.candidates?.[0]?.content?.parts?.[0]?.text||'No response.'
+    headers: k => ({'Content-Type':'application/json','x-goog-api-key':k}),
+    body: msgs => JSON.stringify({contents:[{parts:[{text:msgs[0].content+'\n\nTask: '+msgs[1].content}]}],generationConfig:{maxOutputTokens:500}}),
+    urlFn: k => 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent',
+    parse: d => d.candidates?.[0]?.content?.parts?.[0]?.text||d.error?.message||'No response.'
   },
   groq: {
     name:'Groq (fast+free)',
