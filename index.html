@@ -678,6 +678,32 @@ try {
 // Handle OAuth redirect
 async function initAuth() {
   if(!sb) { showApp(); return; }
+
+  // Clean up OAuth token from URL without page reload
+  if(window.location.hash && window.location.hash.includes('access_token')) {
+    history.replaceState(null, '', window.location.pathname);
+  }
+
+  // Listen for auth changes BEFORE getting session
+  // This fires on initial load if coming back from OAuth redirect
+  sb.auth.onAuthStateChange(async (event, session) => {
+    if(event === 'SIGNED_IN' && session) {
+      currentUser = session.user;
+      await loadFromSupabase();
+      renderUserBar(session.user);
+      updateMenuStats();
+      loadApiKeyFromProgress();
+      // clean URL if needed
+      if(window.location.hash) history.replaceState(null, '', window.location.pathname);
+    } else if(event === 'SIGNED_OUT') {
+      currentUser = null;
+      renderSignIn();
+    } else if(event === 'TOKEN_REFRESHED') {
+      // silent — just update user
+      if(session) currentUser = session.user;
+    }
+  });
+
   try {
     const { data: { session } } = await sb.auth.getSession();
     if(session) {
@@ -688,19 +714,8 @@ async function initAuth() {
       renderSignIn();
     }
   } catch(e) { renderSignIn(); }
-  showApp();
 
-  sb.auth.onAuthStateChange(async (event, session) => {
-    if(event === 'SIGNED_IN' && session) {
-      currentUser = session.user;
-      await loadFromSupabase();
-      renderUserBar(session.user);
-      updateMenuStats();
-    } else if(event === 'SIGNED_OUT') {
-      currentUser = null;
-      renderSignIn();
-    }
-  });
+  showApp();
 }
 
 window.signInGoogle = async function() {
