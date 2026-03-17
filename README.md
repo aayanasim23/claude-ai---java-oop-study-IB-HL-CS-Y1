@@ -2,7 +2,7 @@
 
 > Java OOP exam prep for IB Computer Science HL — Option D
 
-Live at → **[aayanasim23.github.io/claude-ai---java-oop-study-IB-HL-CS-Y1](https://aayanasim23.github.io/claude-ai---java-oop-study-IB-HL-CS-Y1/)**
+Live at → **[aayanasim23.github.io/ib-cs-oop](https://aayanasim23.github.io/ib-cs-oop/)**
 
 ---
 
