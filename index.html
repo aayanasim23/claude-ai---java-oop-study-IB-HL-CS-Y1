@@ -696,8 +696,10 @@ async function initAuth() {
       renderUserBar(session.user);
       updateMenuStats();
       loadApiKeyFromProgress();
+      // If we were waiting on OAuth callback, dismiss the overlay immediately
+      if(window._authDismiss) { window._authDismiss(); window._authDismiss = null; return; }
       // Show app if coming from OAuth callback
-      if(!document.getElementById('menuScreen').style.display || 
+      if(!document.getElementById('menuScreen').style.display ||
          document.getElementById('menuScreen').style.display === 'none') {
         showApp();
       }
@@ -708,15 +710,12 @@ async function initAuth() {
   });
 
   if(isOAuthCallback) {
-    // Coming back from Google — wait for onAuthStateChange to fire
-    // Show a loading state briefly
+    // Coming back from Google — show loading overlay, dismiss when auth event fires
     document.body.innerHTML += '<div id="authLoading" style="position:fixed;top:0;left:0;right:0;bottom:0;background:#080808;display:flex;align-items:center;justify-content:center;z-index:9999;font-family:JetBrains Mono,monospace;color:#00ff41;letter-spacing:3px;font-size:13px;">// SIGNING IN...</div>';
-    // Give Supabase time to exchange the code, then show app
-    setTimeout(() => {
-      const el = document.getElementById('authLoading');
-      if(el) el.remove();
-      showApp();
-    }, 3000);
+    // Dismiss as soon as onAuthStateChange fires (typically <1s), hard cap at 6s
+    const dismiss = () => { const el = document.getElementById('authLoading'); if(el) el.remove(); showApp(); };
+    window._authDismiss = dismiss;
+    setTimeout(dismiss, 6000);
   } else {
     // Normal load — check existing session with hard timeout
     try {
@@ -762,13 +761,24 @@ async function loadFromSupabase() {
   if(!sb || !currentUser) return;
   try {
     const { data, error } = await sb.from('progress').select('data').eq('id', currentUser.id).single();
-    if(data && data.data) {
-      progress = {...defaultP(), ...data.data};
-      saveLocal();
-      if(progress._apiKey) localStorage.setItem('oop_api_key', progress._apiKey);
-      if(progress._provider) { window._provider = progress._provider; localStorage.setItem('oop_provider', progress._provider); }
+    if(error && error.code !== 'PGRST116') { // PGRST116 = no rows, that's fine
+      console.warn('Supabase load error:', error.message);
+      return;
     }
-  } catch(e) { console.log('Supabase load:', e); }
+    if(data && data.data) {
+      // API key lives in localStorage only — never overwrite from DB
+      const localKey = localStorage.getItem('oop_api_key');
+      const localProvider = localStorage.getItem('oop_provider');
+      progress = {...defaultP(), ...data.data};
+      // Strip any key that accidentally got saved to DB previously
+      delete progress._apiKey;
+      delete progress._provider;
+      saveLocal();
+      // Restore from localStorage (source of truth for keys)
+      if(localKey) localStorage.setItem('oop_api_key', localKey);
+      if(localProvider) { window._provider = localProvider; localStorage.setItem('oop_provider', localProvider); }
+    }
+  } catch(e) { console.warn('Supabase load failed:', e); }
 }
 
 window.saveToSupabase = async function() {
@@ -776,21 +786,32 @@ window.saveToSupabase = async function() {
   const el = document.getElementById('syncStatusTxt');
   if(el) el.textContent = '// syncing...';
   try {
-    await sb.from('progress').upsert({ id: currentUser.id, data: progress, updated_at: new Date().toISOString() });
+    // SECURITY: never save API keys to the database
+    const { _apiKey, _provider, ...safeProgress } = progress;
+    await sb.from('progress').upsert({ id: currentUser.id, data: safeProgress, updated_at: new Date().toISOString() });
     if(el) el.textContent = '// synced ✓';
   } catch(e) {
     if(el) el.textContent = '// offline';
+    console.warn('Supabase save failed:', e);
   }
 };
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
 
 function renderUserBar(user) {
   const area = document.getElementById('authArea');
   if(!area) return;
+  const name = escapeHtml(user.user_metadata?.full_name || user.email || '?');
+  const avatarUrl = user.user_metadata?.avatar_url;
+  const initial = escapeHtml((user.email||'?')[0].toUpperCase());
+  const avatarHtml = avatarUrl ? `<img src="${escapeHtml(avatarUrl)}" onerror="this.replaceWith(document.createTextNode('${initial}'))">` : initial;
   area.innerHTML = `<div class="auth-bar">
     <div class="user-info">
-      <div class="user-avatar">${user.user_metadata?.avatar_url ? `<img src="${user.user_metadata.avatar_url}">` : (user.email||'?')[0].toUpperCase()}</div>
+      <div class="user-avatar">${avatarHtml}</div>
       <div>
-        <div class="user-name">${user.user_metadata?.full_name || user.email}</div>
+        <div class="user-name">${name}</div>
         <div class="sync-status" id="syncStatusTxt">// synced ✓</div>
       </div>
     </div>
@@ -1446,6 +1467,7 @@ function markWrong(id) {
   progress.wrong++; progress.streak = 0;
   if(!progress.seenIds[id]) progress.seen++;
   progress.seenIds[id] = Date.now();
+  // Deduplicate: only add if not already in queue
   if(!progress.wrongQueue.includes(id)) progress.wrongQueue.push(id);
   saveProgress();
 }
@@ -1707,15 +1729,16 @@ function render() {
   const bt=labels[q.cat]||'MC';
 
   let html=`<div class="type-row"><div class="type-tag ${bc}">${bt}</div>${isRetry?'<div class="retry-tag">↩ RETRY</div>':''}</div>`;
-  html+=`<div class="q-title">${q.title}</div>`;
-  html+=`<div class="q-concept">${q.concept}</div>`;
+  html+=`<div class="q-title">${escapeHtml(q.title)}</div>`;
+  html+=`<div class="q-concept">${escapeHtml(q.concept)}</div>`;
 
   if(q.code) {
     // Check if code is plain text (AI generated) or has HTML spans
     const codeContent = q.code.includes('<span') ? q.code : escapeCode(q.code);
     html+=`<div class="code-block">${codeContent}</div>`;
   }
-  if(q.prompt) html+=`<div class="q-prompt">${q.prompt}</div>`;
+  // prompt: bank questions use \n for line breaks — convert to <br> safely
+  if(q.prompt) html+=`<div class="q-prompt">${escapeHtml(q.prompt).replace(/\\n/g,'<br>')}</div>`;
 
   if(isMC && q.options) {
     // Shuffle options
@@ -1725,7 +1748,7 @@ function render() {
     q._shuffledAnswer=idxs.indexOf(q.answer);
     html+='<div class="mc-options" id="mcOptions">';
     q._shuffled.forEach((opt,i)=>{
-      html+=`<button class="mc-option" onclick="pickMC(${i})" id="opt${i}"><span class="opt-letter">${String.fromCharCode(65+i)}</span>${opt}</button>`;
+      html+=`<button class="mc-option" onclick="pickMC(${i})" id="opt${i}"><span class="opt-letter">${String.fromCharCode(65+i)}</span>${escapeHtml(opt)}</button>`;
     });
     html+='</div><div class="mc-explain" id="mcExplain"></div>';
   }
@@ -1878,6 +1901,10 @@ window.addEventListener('DOMContentLoaded', () => {
       showApp();
     }
   }, 5000);
+  // Best-effort flush to Supabase when tab is closed mid-session
+  window.addEventListener('beforeunload', () => {
+    if(currentUser && window.saveToSupabase) window.saveToSupabase();
+  });
   initAuth();
 });
 </script>
