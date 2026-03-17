@@ -31,7 +31,7 @@
 <!-- Browser chrome colour (Android/Chrome) -->
 <meta name="theme-color" content="#080808">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap&font-display=swap');
 
 :root {
   --bg: #080808;
@@ -705,30 +705,52 @@ try {
 async function initAuth() {
   if(!sb) { showApp(); return; }
 
-  // Supabase v2 PKCE: after OAuth redirect, URL has ?code=...
-  // The client auto-exchanges it — we just need to wait for SIGNED_IN event
-  const isOAuthCallback = window.location.search.includes('code=') || 
+  const isOAuthCallback = window.location.search.includes('code=') ||
                           window.location.hash.includes('access_token');
 
-  // Set up listener first — fires when PKCE exchange completes
+  // ── Instant session check from localStorage ──────────────────
+  // Supabase stores the session here — check before any network call
+  // so we can render the user bar immediately with no flicker
+  const cachedSession = (() => {
+    try {
+      const raw = localStorage.getItem('sb-jcadfekumhdqebgubchz-auth-token');
+      if(!raw) return null;
+      const parsed = JSON.parse(raw);
+      const exp = parsed?.expires_at || parsed?.session?.expires_at;
+      if(exp && Date.now() / 1000 > exp) return null; // expired
+      return parsed?.user || parsed?.session?.user || null;
+    } catch(e) { return null; }
+  })();
+
+  if(cachedSession && !isOAuthCallback) {
+    // We know the user — show them instantly, validate in background
+    currentUser = cachedSession;
+    renderUserBar(cachedSession);
+    showApp();
+  }
+
+  // ── Auth state listener ───────────────────────────────────────
   sb.auth.onAuthStateChange(async (event, session) => {
-    if(event === 'SIGNED_IN' && session) {
+    if((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session) {
       currentUser = session.user;
-      // Clean URL after successful sign in
-      if(window.location.search.includes('code=') || window.location.hash) {
+      if(window.location.search.includes('code=') || window.location.hash.includes('access_token')) {
         history.replaceState(null, '', window.location.pathname);
       }
-      await loadFromSupabase();
+      // Load DB progress async — never block UI
+      loadFromSupabase().catch(()=>{}).then(() => {
+        if(currentUser) renderUserBar(currentUser);
+        updateMenuStats();
+        loadApiKeyFromProgress();
+      });
       renderUserBar(session.user);
-      updateMenuStats();
-      loadApiKeyFromProgress();
-      // If we were waiting on OAuth callback, dismiss the overlay immediately
+      // Dismiss OAuth overlay if present
       if(window._authDismiss) { window._authDismiss(); window._authDismiss = null; return; }
-      // Show app if coming from OAuth callback
-      if(!document.getElementById('menuScreen').style.display ||
-         document.getElementById('menuScreen').style.display === 'none') {
-        showApp();
-      }
+      if(!cachedSession) showApp(); // only call showApp if we didn't already
+    } else if(event === 'INITIAL_SESSION' && !session) {
+      // Confirmed no session — show sign in
+      currentUser = null;
+      renderSignIn();
+      if(!cachedSession) showApp();
     } else if(event === 'SIGNED_OUT') {
       currentUser = null;
       renderSignIn();
@@ -736,32 +758,17 @@ async function initAuth() {
   });
 
   if(isOAuthCallback) {
-    // Coming back from Google — show loading overlay, dismiss when auth event fires
     document.body.innerHTML += '<div id="authLoading" style="position:fixed;top:0;left:0;right:0;bottom:0;background:#080808;display:flex;align-items:center;justify-content:center;z-index:9999;font-family:JetBrains Mono,monospace;color:#00ff41;letter-spacing:3px;font-size:13px;">// SIGNING IN...</div>';
-    // Dismiss as soon as onAuthStateChange fires (typically <1s), hard cap at 6s
     const dismiss = () => { const el = document.getElementById('authLoading'); if(el) el.remove(); showApp(); };
     window._authDismiss = dismiss;
     setTimeout(dismiss, 6000);
-  } else {
-    // Normal load — check existing session with hard timeout
+  } else if(!cachedSession) {
+    // No cached session — do a proper getSession check
     try {
-      const sessionPromise = sb.auth.getSession();
-      const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000));
-      const { data: { session } } = await Promise.race([sessionPromise, timeout]);
-      if(session) {
-        currentUser = session.user;
-        // Load Supabase data async — don't block showApp
-        loadFromSupabase().catch(()=>{}).then(() => {
-          if(currentUser) renderUserBar(currentUser);
-          updateMenuStats();
-          loadApiKeyFromProgress();
-        });
-        renderUserBar(session.user);
-      } else {
-        renderSignIn();
-      }
-    } catch(e) { renderSignIn(); }
-    showApp();
+      const { data: { session } } = await sb.auth.getSession();
+      if(!session) { renderSignIn(); showApp(); }
+      // if session exists, onAuthStateChange INITIAL_SESSION already handled it
+    } catch(e) { renderSignIn(); showApp(); }
   }
 }
 
