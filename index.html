@@ -794,22 +794,21 @@ async function loadFromSupabase() {
   if(!sb || !currentUser) return;
   try {
     const { data, error } = await sb.from('progress').select('data').eq('id', currentUser.id).single();
-    if(error && error.code !== 'PGRST116') { // PGRST116 = no rows, that's fine
+    if(error && error.code !== 'PGRST116') {
       console.warn('Supabase load error:', error.message);
       return;
     }
     if(data && data.data) {
-      // API key lives in localStorage only — never overwrite from DB
-      const localKey = localStorage.getItem('oop_api_key');
-      const localProvider = localStorage.getItem('oop_provider');
       progress = {...defaultP(), ...data.data};
-      // Strip any key that accidentally got saved to DB previously
-      delete progress._apiKey;
-      delete progress._provider;
       saveLocal();
-      // Restore from localStorage (source of truth for keys)
-      if(localKey) localStorage.setItem('oop_api_key', localKey);
-      if(localProvider) { window._provider = localProvider; localStorage.setItem('oop_provider', localProvider); }
+      // Restore API key and provider from Supabase if not already set locally
+      if(progress._apiKey && !localStorage.getItem('oop_api_key')) {
+        localStorage.setItem('oop_api_key', progress._apiKey);
+      }
+      if(progress._provider) {
+        window._provider = progress._provider;
+        localStorage.setItem('oop_provider', progress._provider);
+      }
     }
   } catch(e) { console.warn('Supabase load failed:', e); }
 }
@@ -819,9 +818,11 @@ window.saveToSupabase = async function() {
   const el = document.getElementById('syncStatusTxt');
   if(el) el.textContent = '// syncing...';
   try {
-    // SECURITY: never save API keys to the database
-    const { _apiKey, _provider, ...safeProgress } = progress;
-    await sb.from('progress').upsert({ id: currentUser.id, data: safeProgress, updated_at: new Date().toISOString() });
+    // Save API key to Supabase for cross-device sync (protected by RLS — only you can read it)
+    const apiKey = localStorage.getItem('oop_api_key');
+    const provider = localStorage.getItem('oop_provider');
+    if(apiKey) { progress._apiKey = apiKey; progress._provider = provider || 'openrouter'; }
+    await sb.from('progress').upsert({ id: currentUser.id, data: progress, updated_at: new Date().toISOString() });
     if(el) el.textContent = '// synced ✓';
   } catch(e) {
     if(el) el.textContent = '// offline';
