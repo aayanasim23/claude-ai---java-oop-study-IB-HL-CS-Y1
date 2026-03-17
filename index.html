@@ -801,9 +801,10 @@ async function loadFromSupabase() {
     if(data && data.data) {
       progress = {...defaultP(), ...data.data};
       saveLocal();
-      // Restore API key and provider from Supabase if not already set locally
-      if(progress._apiKey && !localStorage.getItem('oop_api_key')) {
+      // Always restore API key from Supabase — it's the source of truth for cross-device sync
+      if(progress._apiKey) {
         localStorage.setItem('oop_api_key', progress._apiKey);
+        console.log('// API key synced from Supabase');
       }
       if(progress._provider) {
         window._provider = progress._provider;
@@ -818,10 +819,13 @@ window.saveToSupabase = async function() {
   const el = document.getElementById('syncStatusTxt');
   if(el) el.textContent = '// syncing...';
   try {
-    // Save API key to Supabase for cross-device sync (protected by RLS — only you can read it)
+    // Pull latest key from localStorage into progress before saving
     const apiKey = localStorage.getItem('oop_api_key');
     const provider = localStorage.getItem('oop_provider');
-    if(apiKey) { progress._apiKey = apiKey; progress._provider = provider || 'openrouter'; }
+    if(apiKey) {
+      progress._apiKey = apiKey;
+      progress._provider = provider || 'openrouter';
+    }
     await sb.from('progress').upsert({ id: currentUser.id, data: progress, updated_at: new Date().toISOString() });
     if(el) el.textContent = '// synced ✓';
   } catch(e) {
@@ -1563,7 +1567,9 @@ window.saveApiKey = function() {
   const key = document.getElementById('apiKeyInput').value.trim();
   if(!key || key.length < 8) { document.getElementById('apiKeyStatus').textContent = '// ERROR: key too short'; return; }
   localStorage.setItem('oop_api_key', key);
-  progress._apiKey = key; progress._provider = window._provider;
+  // Set on progress BEFORE saveProgress so both saveLocal and saveToSupabase get it
+  progress._apiKey = key;
+  progress._provider = window._provider;
   saveProgress();
   document.getElementById('apiKeyInput').value = '';
   document.getElementById('apiKeyStatus').innerHTML = `<span style="color:var(--green)">// ${PROVIDERS[window._provider].name} key saved ✓</span>`;
